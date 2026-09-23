@@ -1,0 +1,722 @@
+<!-- language: HTML, file: assets/apps/snake.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Snake — Xyra Edition</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05070a;font-family:"Segoe UI",system-ui,sans-serif;color:#e8e8e8;user-select:none;}
+  #wrap{display:flex;flex-direction:column;height:100%;}
+  #hud{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(0,0,0,.3);flex-shrink:0;gap:16px;}
+  .stat{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:1px;}
+  .stat .lbl{color:rgba(255,255,255,.5);text-transform:uppercase;font-size:10px;}
+  .stat .val{font-family:Consolas,monospace;font-weight:700;color:#00d4ff;font-size:15px;}
+  .stat .val.hi{color:#ffb700;}
+  #slow-badge{display:none;align-items:center;gap:6px;font-size:11px;padding:4px 10px;border-radius:20px;background:rgba(120,20,20,.5);border:1px solid rgba(255,60,60,.5);color:#ff9b9b;letter-spacing:1px;animation:slowPulse 1s ease-in-out infinite;}
+  #slow-badge.on{display:flex;}
+  @keyframes slowPulse{0%,100%{opacity:.7}50%{opacity:1;box-shadow:0 0 12px rgba(255,60,60,.4);}}
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;min-height:0;position:relative;}
+  canvas{background:#0a0e14;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.8),inset 0 0 0 1px rgba(255,255,255,.05);max-width:100%;max-height:100%;display:block;}
+  #footer{padding:8px 18px;border-top:1px solid rgba(255,255,255,.06);text-align:center;font-size:11px;color:rgba(255,255,255,.4);letter-spacing:1px;flex-shrink:0;}
+  #footer kbd{background:rgba(255,255,255,.08);padding:2px 7px;border-radius:4px;font-family:Consolas,monospace;color:rgba(255,255,255,.8);margin:0 2px;font-size:10px;}
+  #overlay{position:absolute;inset:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(5,7,10,.85);backdrop-filter:blur(8px);z-index:10;border-radius:10px;}
+  #overlay.hidden{display:none;}
+  #overlay h1{font-size:52px;font-weight:200;letter-spacing:6px;background:linear-gradient(90deg,#00d4ff,#00b4d8);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  #overlay p{font-size:13px;color:rgba(255,255,255,.6);letter-spacing:2px;text-transform:uppercase;}
+  #overlay .prompt{margin-top:14px;font-size:14px;color:#00d4ff;letter-spacing:2px;animation:blink 1.6s ease-in-out infinite;}
+  @keyframes blink{0%,100%{opacity:.4}50%{opacity:1}}
+  #overlay .keys{display:flex;gap:22px;font-size:11px;color:rgba(255,255,255,.5);margin-top:10px;letter-spacing:1px;flex-wrap:wrap;justify-content:center;}
+  #overlay kbd{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);padding:3px 8px;border-radius:5px;font-family:Consolas,monospace;color:#fff;}
+  #charge-hud{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);width:220px;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden;opacity:0;transition:opacity .15s;z-index:5;}
+  #charge-hud.on{opacity:1;}
+  #charge-hud-fill{height:100%;width:0%;background:linear-gradient(90deg,#00b4d8,#00e0ff,#ffd700);transition:width .04s linear;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <div class="stat"><span class="lbl">Score</span><span class="val" id="score">0</span></div>
+    <div id="slow-badge">🐌 SLOWED</div>
+    <div class="stat"><span class="lbl">Best</span><span class="val hi" id="best">0</span></div>
+  </div>
+  <div id="stage">
+    <canvas id="c" width="600" height="600"></canvas>
+    <div id="charge-hud"><div id="charge-hud-fill"></div></div>
+    <div id="overlay">
+      <h1>SNAKE</h1>
+      <p>Xyra Edition</p>
+      <div class="keys">
+        <span><kbd>WASD</kbd>/<kbd>↑↓←→</kbd> move</span>
+        <span><kbd>SPACE</kbd> tap = hop, hold = charge launch</span>
+        <span><kbd>P</kbd> pause</span>
+      </div>
+      <div class="prompt">PRESS ANY KEY TO START</div>
+    </div>
+  </div>
+  <div id="footer">
+    <kbd>SPACE</kbd> hold to charge · release to launch forward · <span style="color:#ff3b3b;">●</span> apple grows · <span style="color:#7a1010;">●</span> dark apple slows &amp; lags input
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- setup ----------
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const COLS = 24, ROWS = 24, CELL = canvas.width / COLS;
+
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best');
+  const slowBadge = document.getElementById('slow-badge');
+  const overlay = document.getElementById('overlay');
+  const chargeHud = document.getElementById('charge-hud');
+  const chargeFill = document.getElementById('charge-hud-fill');
+
+  // ---------- tuning ----------
+  const BASE_TICK = 128;
+  const MIN_TICK  = 72;
+  const TICK_STEP = 2.4;
+
+  const SLOW_MULT = 2.15;
+  const SLOW_DURATION = 6500;
+  const SLOW_INPUT_DELAY = 240;
+
+  const HOP_GRACE_MS = 520;      // self-collision disabled after a hop
+  const HOP_ANIM_MS  = 420;
+
+  const CHARGE_MIN_MS = 90;
+  const CHARGE_MAX_MS = 1300;
+  const TAP_HOLD_MS   = 190;     // less than this = tap = hop
+  const MIN_LAUNCH    = 2;
+  const MAX_LAUNCH    = 5;
+  const LAUNCH_BASE_MS = 240;
+  const LAUNCH_PER_CELL_MS = 55;
+  const LAUNCH_COOLDOWN_MS = 850;
+
+  // ---------- palette ----------
+  const AC = {
+    head:    '#00e0ff',
+    bodyA:   '#00b4d8',
+    bodyB:   '#01303f',
+    grid:    'rgba(0, 180, 216, 0.045)',
+    good:    '#ff3b3b',
+    goodHi:  '#ff9b9b',
+    goodGlow:'rgba(255, 60, 60, 0.55)',
+    bad:     '#3d0606',
+    badEdge: '#7a1010',
+    badSheen:'#6a8a3a',
+    badGlow: 'rgba(150, 40, 40, 0.55)'
+  };
+
+  // ---------- state ----------
+  let snake, prevPos, nextSegId;
+  let dir, dirQueue;
+  let apples, ghostSegs;
+  let score, best, tickMs, lastTick, running, paused;
+  let startMs;
+
+  // jump states
+  let jumpState = 'idle';        // idle | charging | hopping | launching
+  let chargeStart = 0;
+  let chargeAmount = 0;
+  let jumpAnimStart = 0;
+  let launchState = null;        // { startTime, duration, distance, dirVec, startGrid }
+  let cooldownUntil = 0;
+  let selfHitDisabledUntil = 0;
+
+  // fx
+  let particles = [];
+  let slowUntil = 0;
+  let shakeMag = 0, shakeUntil = 0;
+
+  best = parseInt(localStorage.getItem('xyra.snake.best') || '0', 10);
+  bestEl.textContent = best;
+
+  // ---------- helpers ----------
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+  const easeInOutCubic = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
+
+  function makeSeg(x, y) { return { id: nextSegId++, x, y }; }
+
+  // ---------- setup game ----------
+  function reset() {
+    nextSegId = 1;
+    const cx = Math.floor(COLS/2), cy = Math.floor(ROWS/2);
+    snake = [
+      makeSeg(cx,   cy), makeSeg(cx-1, cy),
+      makeSeg(cx-2, cy), makeSeg(cx-3, cy)
+    ];
+    prevPos = new Map();
+    for (const s of snake) prevPos.set(s.id, { x:s.x, y:s.y });
+
+    dir = { x:1, y:0 };
+    dirQueue = [];
+    apples = [];
+    ghostSegs = [];
+    particles = [];
+
+    score = 0; scoreEl.textContent = '0';
+    tickMs = BASE_TICK;
+    lastTick = performance.now();
+    startMs = lastTick;
+    running = true; paused = false;
+
+    jumpState = 'idle'; chargeAmount = 0;
+    cooldownUntil = 0; selfHitDisabledUntil = 0;
+    launchState = null;
+
+    slowUntil = 0;
+    shakeMag = 0; shakeUntil = 0;
+
+    spawnApple('good');
+    spawnApple('bad');
+
+    overlay.classList.add('hidden');
+    chargeHud.classList.remove('on');
+    updateSlowUI(lastTick);
+  }
+
+  // ---------- apples ----------
+  function spawnApple(kind) {
+    const occupied = new Set();
+    for (const s of snake) occupied.add(s.x + ',' + s.y);
+    for (const a of apples) occupied.add(a.x + ',' + a.y);
+    const free = [];
+    for (let y=0; y<ROWS; y++) for (let x=0; x<COLS; x++) {
+      if (!occupied.has(x + ',' + y)) free.push({ x, y });
+    }
+    if (!free.length) return;
+    const p = free[Math.floor(Math.random()*free.length)];
+    apples.push({ x:p.x, y:p.y, kind, born: performance.now() });
+  }
+
+  // ---------- input ----------
+  function queueDir(nx, ny) {
+    const last = dirQueue.length ? dirQueue[dirQueue.length-1] : dir;
+    if (nx === -last.x && ny === -last.y) return;
+    if (nx === last.x && ny === last.y) return;
+    dirQueue.push({ x:nx, y:ny, at: performance.now() });
+    if (dirQueue.length > 3) dirQueue.shift();
+  }
+
+  function startCharge(now) {
+    if (!running || paused) return;
+    if (jumpState !== 'idle') return;
+    if (now < cooldownUntil) return;
+    jumpState = 'charging';
+    chargeStart = now;
+    chargeAmount = 0;
+    chargeHud.classList.add('on');
+  }
+
+  function releaseCharge(now) {
+    if (jumpState !== 'charging') return;
+    const held = now - chargeStart;
+    const raw = clamp((held - CHARGE_MIN_MS) / (CHARGE_MAX_MS - CHARGE_MIN_MS), 0, 1);
+    chargeHud.classList.remove('on');
+
+    // tap → hop over tail
+    if (held < TAP_HOLD_MS) {
+      jumpState = 'hopping';
+      jumpAnimStart = now;
+      selfHitDisabledUntil = now + HOP_GRACE_MS;
+      cooldownUntil = now + 380;
+      spawnRipple(snake[0].x, snake[0].y);
+      return;
+    }
+
+    // launch
+    const dist = Math.max(MIN_LAUNCH, Math.round(MIN_LAUNCH + raw * (MAX_LAUNCH - MIN_LAUNCH)));
+    const dirVec = { x: dir.x, y: dir.y };
+    const duration = LAUNCH_BASE_MS + dist * LAUNCH_PER_CELL_MS;
+
+    // grid snapshot for animation
+    const startGrid = snake.map(s => ({ id:s.id, x:s.x, y:s.y }));
+
+    launchState = {
+      startTime: now,
+      duration,
+      distance: dist,
+      dirVec,
+      startGrid
+    };
+    jumpState = 'launching';
+    cooldownUntil = now + LAUNCH_COOLDOWN_MS + duration;
+    selfHitDisabledUntil = now + duration + 300;
+  }
+
+  document.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+
+    if (!overlay.classList.contains('hidden')) {
+      overlay.classList.add('hidden');
+      reset();
+      e.preventDefault();
+      return;
+    }
+
+    if (k === 'p') { paused = !paused; e.preventDefault(); return; }
+
+    if (k === ' ') {
+      if (e.repeat) { e.preventDefault(); return; }
+      startCharge(performance.now());
+      e.preventDefault();
+      return;
+    }
+
+    let nx=0, ny=0;
+    if (k === 'arrowup' || k === 'w') { nx=0; ny=-1; }
+    else if (k === 'arrowdown' || k === 's') { nx=0; ny=1; }
+    else if (k === 'arrowleft' || k === 'a') { nx=-1; ny=0; }
+    else if (k === 'arrowright'|| k === 'd') { nx=1; ny=0; }
+    else return;
+
+    e.preventDefault();
+    queueDir(nx, ny);
+  });
+
+  document.addEventListener('keyup', e => {
+    if (e.key === ' ') {
+      releaseCharge(performance.now());
+      e.preventDefault();
+    }
+  });
+
+  // ---------- movement ----------
+  function consumeDir(now) {
+    if (!dirQueue.length) return null;
+    const slow = now < slowUntil;
+    const delay = slow ? SLOW_INPUT_DELAY : 0;
+    const next = dirQueue[0];
+    if (now - next.at < delay) return null;
+    dirQueue.shift();
+    return next;
+  }
+
+  function stepSnake(now) {
+    // apply direction (only if turning is safe / not 180)
+    const nd = consumeDir(now);
+    if (nd) dir = { x:nd.x, y:nd.y };
+
+    const head = snake[0];
+    const nx = head.x + dir.x;
+    const ny = head.y + dir.y;
+
+    if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) { endGame(); return; }
+
+    const selfHit = snake.some((s, i) => i > 0 && s.x === nx && s.y === ny);
+    if (selfHit && now >= selfHitDisabledUntil) { endGame(); return; }
+
+    // save prev
+    for (const s of snake) prevPos.set(s.id, { x:s.x, y:s.y });
+
+    // new head interpolates from old head's position
+    const newHead = makeSeg(nx, ny);
+    prevPos.set(newHead.id, { x: head.x, y: head.y });
+    snake.unshift(newHead);
+
+    // apple
+    let grew = false;
+    for (let i = apples.length-1; i >= 0; i--) {
+      const a = apples[i];
+      if (a.x === nx && a.y === ny) {
+        if (a.kind === 'good') {
+          grew = true;
+          score += 10;
+          tickMs = Math.max(MIN_TICK, tickMs - TICK_STEP);
+          burst(nx, ny, AC.good, 18);
+        } else {
+          score = Math.max(0, score - 5);
+          slowUntil = now + SLOW_DURATION;
+          burst(nx, ny, AC.badEdge, 22);
+          shakeMag = 10; shakeUntil = now + 320;
+        }
+        scoreEl.textContent = score;
+        apples.splice(i, 1);
+        setTimeout(() => spawnApple(a.kind), 420);
+        break;
+      }
+    }
+    if (!grew) {
+      const popped = snake.pop();
+      const newTail = snake[snake.length-1];
+      if (popped && newTail) {
+        ghostSegs.push({
+          x: popped.x, y: popped.y,
+          tx: newTail.x, ty: newTail.y,
+          born: now
+        });
+      }
+    }
+    if (!apples.length) { spawnApple('good'); spawnApple('bad'); }
+
+    updateSlowUI(now);
+  }
+
+  function startLaunch(now) {
+    const { startTime, duration, distance, dirVec, startGrid } = launchState;
+    const t = (now - startTime) / duration;
+
+    if (t >= 1) {
+      // commit the launch: shift grid positions
+      const oldHead = snake[0];
+      const finalHX = oldHead.x + dirVec.x * distance;
+      const finalHY = oldHead.y + dirVec.y * distance;
+
+      if (finalHX < 0 || finalHX >= COLS || finalHY < 0 || finalHY >= ROWS) {
+        launchState = null;
+        endGame();
+        return;
+      }
+
+      for (const s of snake) {
+        prevPos.set(s.id, { x:s.x, y:s.y });
+        s.x += dirVec.x * distance;
+        s.y += dirVec.y * distance;
+      }
+      burst(finalHX, finalHY, AC.head, 26);
+      shakeMag = 5; shakeUntil = now + 220;
+      launchState = null;
+      jumpState = 'idle';
+      lastTick = now;
+    }
+  }
+
+  // ---------- fx ----------
+  function burst(gx, gy, color, n) {
+    const cx = gx*CELL + CELL/2, cy = gy*CELL + CELL/2;
+    for (let i=0;i<n;i++) {
+      const ang = Math.random()*Math.PI*2;
+      const spd = 1 + Math.random()*3.2;
+      particles.push({
+        x:cx, y:cy,
+        vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+        life:1, decay: 0.014 + Math.random()*0.02,
+        color, r: 1.5 + Math.random()*2.4
+      });
+    }
+  }
+  function spawnRipple(gx, gy) {
+    for (let i=0;i<10;i++) {
+      const ang = Math.random()*Math.PI*2;
+      const spd = 0.6 + Math.random()*1.4;
+      particles.push({
+        x: gx*CELL + CELL/2, y: gy*CELL + CELL/2,
+        vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd,
+        life:1, decay: 0.03,
+        color: AC.head, r: 1.4
+      });
+    }
+  }
+
+  function updateSlowUI(now) {
+    if (now < slowUntil) slowBadge.classList.add('on');
+    else slowBadge.classList.remove('on');
+  }
+
+  // ---------- render ----------
+  function draw(now) {
+    const slowActive = now < slowUntil;
+    const effTick = tickMs * (slowActive ? SLOW_MULT : 1);
+
+    // shake
+    let sx=0, sy=0;
+    if (now < shakeUntil) {
+      const m = shakeMag * (1 - (now - (shakeUntil - 320)) / 320);
+      sx = (Math.random()-.5)*m;
+      sy = (Math.random()-.5)*m;
+    }
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.fillStyle = '#0a0e14';
+    ctx.fillRect(-10, -10, canvas.width+20, canvas.height+20);
+
+    drawGrid();
+    for (const a of apples) drawApple(a, now);
+    drawGhosts(now, effTick);
+    drawSnake(now, effTick);
+
+    // particles
+    for (const p of particles) {
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.94; p.vy *= 0.94;
+      p.life -= p.decay;
+      if (p.life <= 0) continue;
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    particles = particles.filter(p => p.life > 0);
+
+    if (paused) {
+      ctx.fillStyle = 'rgba(5,7,10,.72)';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#00d4ff';
+      ctx.font = '200 44px "Segoe UI",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('PAUSED', canvas.width/2, canvas.height/2);
+      ctx.font = '12px "Segoe UI",sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,.5)';
+      ctx.fillText('press P to resume', canvas.width/2, canvas.height/2 + 30);
+    }
+
+    ctx.restore();
+  }
+
+  function drawGrid() {
+    ctx.strokeStyle = AC.grid;
+    ctx.lineWidth = 1;
+    for (let x=1; x<COLS; x++) {
+      ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, canvas.height); ctx.stroke();
+    }
+    for (let y=1; y<ROWS; y++) {
+      ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(canvas.width, y*CELL); ctx.stroke();
+    }
+  }
+
+  function segVisualPos(s, now, effTick) {
+    // during a launch — the whole snake is offset by launch distance * progress
+    if (jumpState === 'launching' && launchState) {
+      const t = clamp((now - launchState.startTime) / launchState.duration, 0, 1);
+      const eased = easeOutCubic(t);
+      const startSeg = launchState.startGrid.find(g => g.id === s.id);
+      const baseX = startSeg ? startSeg.x : s.x;
+      const baseY = startSeg ? startSeg.y : s.y;
+      return {
+        x: baseX + launchState.dirVec.x * launchState.distance * eased,
+        y: baseY + launchState.dirVec.y * launchState.distance * eased,
+        lift: Math.sin(t * Math.PI) * 0.35
+      };
+    }
+
+    // otherwise — normal interpolation from prev to current grid cell
+    const p = clamp((now - lastTick) / effTick, 0, 1);
+    const prev = prevPos.get(s.id) || { x:s.x, y:s.y };
+    let lift = 0;
+    // hop animation
+    if (jumpState === 'hopping') {
+      const t = (now - jumpAnimStart) / HOP_ANIM_MS;
+      if (t > 0 && t < 1) lift = Math.sin(t * Math.PI) * 0.18;
+    }
+    // per-segment hop wave for smooth chain when snake is long
+    const idx = snake.indexOf(s);
+    if (jumpState === 'hopping' && idx > 0) {
+      const wave = (now - jumpAnimStart - idx * 12) / HOP_ANIM_MS;
+      if (wave > 0 && wave < 1) lift = Math.max(lift, Math.sin(wave * Math.PI) * 0.16);
+    }
+    return {
+      x: lerp(prev.x, s.x, p),
+      y: lerp(prev.y, s.y, p),
+      lift
+    };
+  }
+
+  function drawSnake(now, effTick) {
+    const len = snake.length;
+    // body tail → head so head draws on top
+    for (let i=len-1; i>=0; i--) {
+      const s = snake[i];
+      const v = segVisualPos(s, now, effTick);
+      const px = v.x * CELL + CELL/2;
+      const py = v.y * CELL + CELL/2 - v.lift * CELL;
+
+      // shadow during lift
+      if (v.lift > 0.02) {
+        ctx.globalAlpha = v.lift * 1.8;
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.ellipse(v.x*CELL + CELL/2, v.y*CELL + CELL/2 + CELL*0.4,
+                    CELL*0.42*(1-v.lift*0.6), CELL*0.14, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      const t = i / Math.max(1, len-1);
+      const col = mixColor(AC.head, AC.bodyB, t);
+      const r = (CELL/2 - 1.2) * (1 + v.lift*0.5);
+
+      if (i === 0) { ctx.shadowBlur = 16; ctx.shadowColor = AC.head; }
+      else if (v.lift > 0.05) { ctx.shadowBlur = 12; ctx.shadowColor = AC.bodyA; }
+      else { ctx.shadowBlur = 0; }
+
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // head eyes
+    const head = snake[0];
+    const v = segVisualPos(head, now, effTick);
+    const hx = v.x * CELL + CELL/2;
+    const hy = v.y * CELL + CELL/2 - v.lift * CELL;
+    const eyeR = CELL * 0.095;
+    const perp = { x:-dir.y, y:dir.x };
+    for (const side of [-1, 1]) {
+      const ex = hx + dir.x * CELL*0.18 + perp.x * CELL*0.15 * side;
+      const ey = hy + dir.y * CELL*0.18 + perp.y * CELL*0.15 * side;
+      ctx.fillStyle = '#05070a';
+      ctx.beginPath(); ctx.arc(ex, ey, eyeR, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#00e0ff';
+      ctx.beginPath(); ctx.arc(ex + dir.x*1.1, ey + dir.y*1.1, eyeR*0.5, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  function drawGhosts(now, effTick) {
+    for (let i = ghostSegs.length-1; i >= 0; i--) {
+      const g = ghostSegs[i];
+      const age = now - g.born;
+      if (age > effTick) { ghostSegs.splice(i,1); continue; }
+      const p = age / effTick;
+      const gx = lerp(g.x, g.tx, p) * CELL + CELL/2;
+      const gy = lerp(g.y, g.ty, p) * CELL + CELL/2;
+      ctx.globalAlpha = (1 - p) * 0.55;
+      ctx.fillStyle = AC.bodyB;
+      ctx.beginPath();
+      ctx.arc(gx, gy, (CELL/2 - 1.2) * (1 - p*0.5), 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawApple(a, now) {
+    const cx = a.x*CELL + CELL/2;
+    const cy = a.y*CELL + CELL/2;
+    const age = now - a.born;
+    const pop = Math.min(1, age / 240);
+    const bob = Math.sin(now / 420 + a.x * 0.4) * 1.2;
+    const r = (CELL*0.36) * (0.6 + pop*0.4);
+
+    if (a.kind === 'good') {
+      ctx.shadowBlur = 16;
+      ctx.shadowColor = AC.goodGlow;
+      ctx.fillStyle = AC.good;
+      ctx.beginPath(); ctx.arc(cx, cy + bob, r, 0, Math.PI*2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = AC.goodHi;
+      ctx.beginPath(); ctx.arc(cx - r*0.3, cy - r*0.35 + bob, r*0.3, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#2a7a3a';
+      ctx.beginPath();
+      ctx.ellipse(cx + r*0.22, cy - r*0.9 + bob, r*0.3, r*0.14, -0.4, 0, Math.PI*2);
+      ctx.fill();
+    } else {
+      const pulse = 0.6 + Math.sin(now / 280) * 0.4;
+      ctx.shadowBlur = 14 + pulse * 12;
+      ctx.shadowColor = AC.badGlow;
+      ctx.fillStyle = AC.bad;
+      ctx.beginPath(); ctx.arc(cx, cy + bob, r, 0, Math.PI*2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = AC.badEdge;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.arc(cx, cy + bob, r, 0, Math.PI*2); ctx.stroke();
+      // sickly sheen
+      ctx.globalAlpha = 0.45 + pulse*0.2;
+      ctx.fillStyle = AC.badSheen;
+      ctx.beginPath(); ctx.arc(cx - r*0.3, cy - r*0.3 + bob, r*0.24, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+      // rot spots
+      ctx.fillStyle = '#150202';
+      for (const s of [[0.2,-0.1],[-0.15,0.25],[0.1,0.35]]) {
+        ctx.beginPath();
+        ctx.arc(cx + s[0]*r, cy + s[1]*r + bob, r*0.13, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // wilted leaf
+      ctx.strokeStyle = '#3a5a1a';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - r + bob);
+      ctx.quadraticCurveTo(cx + 2, cy - r*1.5 + bob, cx + 7, cy - r*1.4 + bob);
+      ctx.stroke();
+    }
+  }
+
+  function mixColor(a, b, t) {
+    const pa = hexToRgb(a), pb = hexToRgb(b);
+    return `rgb(${Math.round(pa.r+(pb.r-pa.r)*t)},${Math.round(pa.g+(pb.g-pa.g)*t)},${Math.round(pa.b+(pb.b-pa.b)*t)})`;
+  }
+  function hexToRgb(h) {
+    const n = parseInt(h.replace('#',''), 16);
+    return { r:(n>>16)&255, g:(n>>8)&255, b:n&255 };
+  }
+
+  function endGame() {
+    running = false;
+    jumpState = 'idle';
+    chargeHud.classList.remove('on');
+    if (score > best) {
+      best = score;
+      localStorage.setItem('xyra.snake.best', String(best));
+      bestEl.textContent = best;
+    }
+    overlay.classList.remove('hidden');
+    overlay.querySelector('h1').textContent = 'GAME OVER';
+    overlay.querySelector('p').textContent = 'Score ' + score + ' · Best ' + best;
+    overlay.querySelector('.prompt').textContent = 'PRESS ANY KEY TO RESTART';
+  }
+
+  // ---------- loop ----------
+  function frame(now) {
+    requestAnimationFrame(frame);
+
+    if (!running || paused) {
+      draw(now);
+      if (jumpState === 'charging') {
+        // keep the charge bar responsive
+        const held = now - chargeStart;
+        chargeAmount = clamp((held - CHARGE_MIN_MS) / (CHARGE_MAX_MS - CHARGE_MIN_MS), 0, 1);
+        chargeFill.style.width = (chargeAmount*100).toFixed(1) + '%';
+      }
+      return;
+    }
+
+    // charging meter
+    if (jumpState === 'charging') {
+      const held = now - chargeStart;
+      chargeAmount = clamp((held - CHARGE_MIN_MS) / (CHARGE_MAX_MS - CHARGE_MIN_MS), 0, 1);
+      chargeFill.style.width = (chargeAmount*100).toFixed(1) + '%';
+    }
+
+    // hop end
+    if (jumpState === 'hopping' && now - jumpAnimStart > HOP_ANIM_MS + 200) {
+      jumpState = 'idle';
+    }
+
+    // launch progress
+    if (jumpState === 'launching' && launchState) {
+      startLaunch(now);
+    } else {
+      // normal ticks
+      const slowActive = now < slowUntil;
+      const effTick = tickMs * (slowActive ? SLOW_MULT : 1);
+      if (now - lastTick >= effTick) {
+        lastTick = now;
+        stepSnake(now);
+      }
+    }
+
+    updateSlowUI(now);
+    draw(now);
+  }
+
+  // ---------- init ----------
+  snake = [makeSeg(0,0)];
+  prevPos = new Map();
+  apples = []; ghostSegs = []; particles = [];
+  dir = { x:1, y:0 };
+  dirQueue = [];
+  tickMs = BASE_TICK;
+  lastTick = performance.now();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
