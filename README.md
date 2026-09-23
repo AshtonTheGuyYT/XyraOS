@@ -3,9 +3,7 @@ A custom web-based operating system simulator.
 
 
 
-# XyraOS
-
-Local Browser-based Operating System. Flask backend, HTML shell, virtual file system,
+XyraOS is a local Browser-based Operating System. Flask backend, HTML shell, virtual file system,
 app store, games loaded from `assets/apps/`.
 
 ## Run
